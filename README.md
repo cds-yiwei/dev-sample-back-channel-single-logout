@@ -13,6 +13,11 @@ This sample shows how to use the openid-client library with Node.js to:
 3. After successfully intalling node_modules, from the CLI start the sample application by running `npm run start`
 4. navigate to `http://localhost:3000` in your browser and follow the on screen prompts to authenticate your app using the
 Authorization code flow with IBM Security Verify.
+
+## Troubleshooting
+- CLI displaying `npm ERR! code E401` when trying to run `npm install`. Delete the package-lock.json file and run `npm install` again.
+
+
 ## License
 
 The MIT License (MIT)
