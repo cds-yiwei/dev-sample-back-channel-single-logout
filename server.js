@@ -44,7 +44,13 @@ const REDIRECT_URI_PATHNAME = new URL(process.env.REDIRECT_URI).pathname;
 
 // Function for create client 
 async function setUpOIDC() {
-	const issuer = await Issuer.discover(process.env.TENANT_URL);
+	let tenantURL = process.env.TENANT_URL;
+	if(tenantURL?.endsWith('/')) {
+	  tenantURL = `${tenantURL}oidc/endpoint/default/.well-known/openid-configuration`
+	} else {
+	  tenantURL = `${tenantURL}/oidc/endpoint/default/.well-known/openid-configuration`
+	}
+	const issuer = await Issuer.discover(tenantURL);
 	const client = new issuer.Client({
 		client_id: process.env.CLIENT_ID,
 		client_secret: process.env.CLIENT_SECRET,
@@ -54,8 +60,6 @@ async function setUpOIDC() {
 
 	return client;
 }
-
-
 
 // Home route
 app.get('/', (req, res) => {
@@ -90,7 +94,6 @@ app.get(REDIRECT_URI_PATHNAME, async (req, res) => {
 	const userinfo = await client.userinfo(tokenSet.access_token);
 	req.session.tokenSet = tokenSet;
 	req.session.userinfo = userinfo;
-	console.log(userinfo);
 	res.redirect('/dashboard');
 });
 
