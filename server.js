@@ -46,9 +46,9 @@ const REDIRECT_URI_PATHNAME = new URL(process.env.REDIRECT_URI).pathname;
 async function setUpOIDC() {
 	let tenantURL = process.env.TENANT_URL;
 	if(tenantURL?.endsWith('/')) {
-	  tenantURL = `${tenantURL}oidc/endpoint/default/.well-known/openid-configuration`
+	  tenantURL = `${tenantURL}oauth2/.well-known/openid-configuration`
 	} else {
-	  tenantURL = `${tenantURL}/oidc/endpoint/default/.well-known/openid-configuration`
+	  tenantURL = `${tenantURL}oauth2/.well-known/openid-configuration`
 	}
 	const issuer = await Issuer.discover(tenantURL);
 	const client = new issuer.Client({
