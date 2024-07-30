@@ -48,7 +48,7 @@ async function setUpOIDC() {
 	if(tenantURL?.endsWith('/')) {
 	  tenantURL = `${tenantURL}oauth2/.well-known/openid-configuration`
 	} else {
-	  tenantURL = `${tenantURL}oauth2/.well-known/openid-configuration`
+	  tenantURL = `${tenantURL}/oauth2/.well-known/openid-configuration`
 	}
 	const issuer = await Issuer.discover(tenantURL);
 	const client = new issuer.Client({
