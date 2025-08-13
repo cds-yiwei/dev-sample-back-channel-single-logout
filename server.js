@@ -100,10 +100,11 @@ app.get(REDIRECT_URI_PATHNAME, async (req, res) => {
 // Page for render userInfo
 app.get('/dashboard', (req, res) => {
 	const userinfo = req.session.userinfo;
+	const tokenSet = req.session.tokenSet;
 	if (!userinfo) {
 		return res.redirect('/login');
 	}
-	res.render('dashboard', { userInfo: userinfo });
+	res.render('dashboard', { userInfo: userinfo, tokenSet: tokenSet });
 });
 
 app.get('/logout', async (req, res) => {
@@ -118,6 +119,51 @@ app.get('/logout', async (req, res) => {
 	// logout from OP ? doesn't work
 	await client.revoke(token.access_token).catch(console.error);
 });
+
+// Back Channel Logout endpoint
+app.post('/backchannel_logout', express.json(), async (req, res) => {
+	try {
+		const client = await setUpOIDC();
+		const logoutToken = req.body.logout_token;
+
+		if (!logoutToken) {
+			return res.status(400).json({ error: 'logout_token is required' });
+		}
+
+		// Validate the logout token
+		const valid = await client.validateJWT(logoutToken, {
+			audience: process.env.CLIENT_ID,
+			typ: 'logout+jwt'
+		});
+
+		if (!valid) {
+			return res.status(400).json({ error: 'Invalid logout token' });
+		}
+
+		// Get the subject (user) from the logout token
+		const payload = client.validateIdToken(logoutToken);
+		const sub = payload.sub;
+
+		// Destroy all sessions for this user
+		// Note: You might need to implement a session store that supports querying by user ID
+		// The following is a simple implementation that destroys the current session
+		if (req.session.userinfo && req.session.userinfo.sub === sub) {
+			req.session.destroy((err) => {
+				if (err) {
+					console.error('Error destroying session:', err);
+				}
+			});
+		}
+
+		// Return successful response
+		return res.status(200).json({ status: 'ok' });
+	} catch (error) {
+		console.error('Back channel logout error:', error);
+		return res.status(500).json({ error: 'Internal server error' });
+	}
+});
+
+
 
 // Listen PORT
 app.listen(3000, () => {
