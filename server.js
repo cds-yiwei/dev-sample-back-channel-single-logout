@@ -112,12 +112,34 @@ app.get('/logout', async (req, res) => {
 	const client = await setUpOIDC();
 	// get token from session
 	const token = req.session.tokenSet;
-	// check result
+
+	// Get end_session_endpoint from issuer metadata
+	const endSessionUrl = client.issuer.metadata.end_session_endpoint;
+
+	// Build logout URL for IdP (Single Logout)
+	let logoutUrl = endSessionUrl;
+	if (logoutUrl) {
+		const params = new URLSearchParams();
+		if (token && token.id_token) {
+			params.append('id_token_hint', token.id_token);
+		}
+		params.append('post_logout_redirect_uri', process.env.POST_LOGOUT_REDIRECT_URI);
+		logoutUrl += `?${params.toString()}`;
+	}
+
+	// Destroy session and redirect to IdP logout
 	req.session.destroy(() => {
-		res.redirect('/');
+		if (logoutUrl) {
+			res.redirect(logoutUrl);
+		} else {
+			res.redirect('/');
+		}
 	});
-	// logout from OP ? doesn't work
-	await client.revoke(token.access_token).catch(console.error);
+
+	// Optionally revoke access token at OP
+	 (token && token.access_token) {
+		await client.revoke(token.access_token).catch(console.error);
+	}if
 });
 
 // Back Channel Logout endpoint
