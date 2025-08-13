@@ -137,9 +137,9 @@ app.get('/logout', async (req, res) => {
 	});
 
 	// Optionally revoke access token at OP
-	 (token && token.access_token) {
+	if (token && token.access_token) {
 		await client.revoke(token.access_token).catch(console.error);
-	}if
+	}
 });
 
 // Back Channel Logout endpoint
