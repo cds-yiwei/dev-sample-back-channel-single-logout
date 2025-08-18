@@ -20,9 +20,14 @@ Copyright (c) 2023 - IBM Corp.
 
 const express = require('express');
 const session = require('express-session');
+// Central in-memory cache for userinfo, keyed by sub
+// simulates a central session store
+// In production, consider using a distributed cache like Redis or a database
+const userinfoCache = {};
 require('dotenv').config();
 
 const { Issuer, generators } = require('openid-client');
+const { createRemoteJWKSet, jwtVerify } = require('jose');
 const path = require('path');
 const app = express();
 
@@ -93,13 +98,16 @@ app.get(REDIRECT_URI_PATHNAME, async (req, res) => {
 		params, { state: req.query.state, nonce: req.session.nonce });
 	const userinfo = await client.userinfo(tokenSet.access_token);
 	req.session.tokenSet = tokenSet;
-	req.session.userinfo = userinfo;
+	// req.session.userinfo = userinfo;
+	req.session.sub = userinfo.sub; // Save sub in session for lookup
+	userinfoCache[userinfo.sub] = userinfo; // Save userinfo in central cache
 	res.redirect('/dashboard');
 });
 
 // Page for render userInfo
 app.get('/dashboard', (req, res) => {
-	const userinfo = req.session.userinfo;
+	const sub = req.session.sub;
+	const userinfo = sub ? userinfoCache[sub] : undefined;
 	const tokenSet = req.session.tokenSet;
 	if (!userinfo) {
 		return res.redirect('/login');
@@ -127,23 +135,29 @@ app.get('/logout', async (req, res) => {
 		logoutUrl += `?${params.toString()}`;
 	}
 
-	// Destroy session and redirect to IdP logout
-	req.session.destroy(() => {
-		if (logoutUrl) {
+	if (logoutUrl) {
 			res.redirect(logoutUrl);
 		} else {
 			res.redirect('/');
 		}
-	});
+	// Destroy session and redirect to IdP logout
+	// req.session.destroy(() => {
+	// 	if (logoutUrl) {
+	// 		res.redirect(logoutUrl);
+	// 	} else {
+	// 		res.redirect('/');
+	// 	}
+	// });
 
 	// Optionally revoke access token at OP
-	if (token && token.access_token) {
-		await client.revoke(token.access_token).catch(console.error);
-	}
+	// if (token && token.access_token) {
+	// 	await client.revoke(token.access_token).catch(console.error);
+	// }
 });
 
 // Back Channel Logout endpoint
 app.post('/backchannel_logout', express.json(), async (req, res) => {
+	console.error('Back channel logout init:');
 	try {
 		const client = await setUpOIDC();
 		const logoutToken = req.body.logout_token;
@@ -152,39 +166,74 @@ app.post('/backchannel_logout', express.json(), async (req, res) => {
 			return res.status(400).json({ error: 'logout_token is required' });
 		}
 
-		// Validate the logout token
-		const valid = await client.validateJWT(logoutToken, {
-			audience: process.env.CLIENT_ID,
-			typ: 'logout+jwt'
-		});
-
-		if (!valid) {
-			return res.status(400).json({ error: 'Invalid logout token' });
+		const jwks = createRemoteJWKSet(new URL(client.issuer.metadata.jwks_uri));
+        const payload = await validateLogoutToken(logoutToken, jwks);
+	
+		// Terminate session(s)
+		if (payload.sid) {
+			await destroySessionsBySid(payload.sid);
+		} else if (payload.sub) {
+			await destroySessionsBySub(payload.sub);
 		}
 
-		// Get the subject (user) from the logout token
-		const payload = client.validateIdToken(logoutToken);
-		const sub = payload.sub;
+		// if (!valid) {
+		// 	return res.status(400).json({ error: 'Invalid logout token' });
+		// }
 
-		// Destroy all sessions for this user
-		// Note: You might need to implement a session store that supports querying by user ID
-		// The following is a simple implementation that destroys the current session
-		if (req.session.userinfo && req.session.userinfo.sub === sub) {
-			req.session.destroy((err) => {
-				if (err) {
-					console.error('Error destroying session:', err);
-				}
-			});
-		}
+
+
+		
 
 		// Return successful response
 		return res.status(200).json({ status: 'ok' });
 	} catch (error) {
 		console.error('Back channel logout error:', error);
-		return res.status(500).json({ error: 'Internal server error' });
+		return res.status(400).json({ error: 'Internal server error' });
 	}
 });
 
+async function validateLogoutToken(logoutToken, jwks) {
+  if (!logoutToken) throw new Error('missing logout_token');
+
+  // Verify signature and standard claims (exp, nbf, iss, aud) via jose
+  const { payload } = await jwtVerify(logoutToken, jwks, {
+    audience: process.env.CLIENT_ID
+    // iat/exp/nbf are validated by jwtVerify by default
+  });
+
+  // Required: events claim with backchannel-logout event
+  const events = payload.events;
+  const bcEventKey = 'http://schemas.openid.net/event/backchannel-logout';
+  if (!events || typeof events !== 'object' || !events[bcEventKey]) {
+    throw new Error('missing backchannel logout event claim');
+  }
+
+  // Required: jti present
+//   if (!payload.jti) throw new Error('missing jti claim');
+
+//   // Replay protection: reject if jti already seen
+//   if (seenJti.has(payload.jti)) throw new Error('replayed logout_token (jti seen)');
+//   // Mark as seen; in production persist with TTL at least until token expiry
+//   seenJti.add(payload.jti);
+
+  // Required: sub or sid present (per spec)
+  if (!payload.sub && !payload.sid) throw new Error('must contain sub or sid');
+
+  return payload;
+}
+
+// Helper placeholders - implement according to your session store
+async function destroySessionsBySid(sid) {
+  // Example: find session by sid and destroy it
+  // await destroySessionsBySid(sid);
+}
+async function destroySessionsBySub(sub) {
+  // Example: find sessions by sub and destroy them
+  // await destroySessionsBySub(sub);
+	if (userinfoCache[sub]) {
+		userinfoCache[sub] = undefined; // Clear userinfo cache for the sub
+	}
+}
 
 
 // Listen PORT
