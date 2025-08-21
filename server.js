@@ -20,10 +20,9 @@ Copyright (c) 2023 - IBM Corp.
 
 const express = require('express');
 const session = require('express-session');
-// Central in-memory cache for userinfo, keyed by sub
-// simulates a central session store
-// In production, consider using a distributed cache like Redis or a database
-const userinfoCache = {};
+
+// Create a MemoryStore instance
+const memoryStore = new session.MemoryStore();
 require('dotenv').config();
 
 const { Issuer, generators } = require('openid-client');
@@ -35,7 +34,14 @@ const app = express();
 app.use(session({
 	secret: 'my-secret',
 	resave: true,
-	saveUninitialized: false
+	saveUninitialized: false,
+	store : memoryStore,
+	genid : (req) => {
+		if (req.oidcSub)
+			return req.oidcSub;
+		else
+			return require('crypto').randomUUID();
+    },
 }));
 
 //middleware
@@ -68,7 +74,7 @@ async function setUpOIDC() {
 
 // Home route
 app.get('/', (req, res) => {
-	if (req.session.token) {
+	if (req.session && req.session.token) {
 		res.redirect("/dashboard");
 	} else {
 		res.render('index')
@@ -97,20 +103,28 @@ app.get(REDIRECT_URI_PATHNAME, async (req, res) => {
 	const tokenSet = await client.callback(process.env.REDIRECT_URI,
 		params, { state: req.query.state, nonce: req.session.nonce });
 	const userinfo = await client.userinfo(tokenSet.access_token);
-	req.session.tokenSet = tokenSet;
-	// req.session.userinfo = userinfo;
-	req.session.sub = userinfo.sub; // Save sub in session for lookup
-	userinfoCache[userinfo.sub] = userinfo; // Save userinfo in central cache
-	res.redirect('/dashboard');
+	
+	req.oidcSub = tokenSet.claims().sub;
+	// regenerate sessiion with sub claim as session id
+	req.session.regenerate((err) => {
+		if (err) {
+			console.error('Session regeneration error:', err);
+			return res.status(500).send('Internal Server Error');
+		}
+		req.session.tokenSet = tokenSet; // Save tokenSet in session
+		req.session.userinfo = userinfo; // Save userinfo in session
+		res.redirect('/dashboard');
+	});
+
+	// res.redirect('/dashboard');
 });
 
 // Page for render userInfo
 app.get('/dashboard', (req, res) => {
-	const sub = req.session.sub;
-	const userinfo = sub ? userinfoCache[sub] : undefined;
+	const userinfo = req.session.userinfo;
 	const tokenSet = req.session.tokenSet;
 	if (!userinfo) {
-		return res.redirect('/login');
+		return res.redirect('/');
 	}
 	res.render('dashboard', { userInfo: userinfo, tokenSet: tokenSet });
 });
@@ -121,33 +135,31 @@ app.get('/logout', async (req, res) => {
 	// get token from session
 	const token = req.session.tokenSet;
 
-	// Get end_session_endpoint from issuer metadata
-	const endSessionUrl = client.issuer.metadata.end_session_endpoint;
+	req.session.destroy(() => {
+		if (process.env.POST_LOGOUT_REDIRECT_URI) {
+			// Get end_session_endpoint from issuer metadata
+			const endSessionUrl = client.issuer.metadata.end_session_endpoint;
+            // Build logout URL for IdP (Single Logout)
+			let logoutUrl = endSessionUrl;
+			if (logoutUrl) {
+				const params = new URLSearchParams();
+				if (token && token.id_token) {
+					params.append('id_token_hint', token.id_token);
+				}
+				params.append('post_logout_redirect_uri', process.env.POST_LOGOUT_REDIRECT_URI);
+				logoutUrl += `?${params.toString()}`;
 
-	// Build logout URL for IdP (Single Logout)
-	let logoutUrl = endSessionUrl;
-	if (logoutUrl) {
-		const params = new URLSearchParams();
-		if (token && token.id_token) {
-			params.append('id_token_hint', token.id_token);
+				res.redirect(logoutUrl);
+			}
+			else{
+				res.redirect('/');
+			}
 		}
-		params.append('post_logout_redirect_uri', process.env.POST_LOGOUT_REDIRECT_URI);
-		logoutUrl += `?${params.toString()}`;
-	}
-
-	if (logoutUrl) {
-			res.redirect(logoutUrl);
-		} else {
+		else{
 			res.redirect('/');
 		}
-	// Destroy session and redirect to IdP logout
-	// req.session.destroy(() => {
-	// 	if (logoutUrl) {
-	// 		res.redirect(logoutUrl);
-	// 	} else {
-	// 		res.redirect('/');
-	// 	}
-	// });
+		
+	});
 
 	// Optionally revoke access token at OP
 	// if (token && token.access_token) {
@@ -175,14 +187,6 @@ app.post('/backchannel_logout', express.json(), async (req, res) => {
 		} else if (payload.sub) {
 			await destroySessionsBySub(payload.sub);
 		}
-
-		// if (!valid) {
-		// 	return res.status(400).json({ error: 'Invalid logout token' });
-		// }
-
-
-
-		
 
 		// Return successful response
 		return res.status(200).json({ status: 'ok' });
@@ -225,14 +229,19 @@ async function validateLogoutToken(logoutToken, jwks) {
 // Helper placeholders - implement according to your session store
 async function destroySessionsBySid(sid) {
   // Example: find session by sid and destroy it
-  // await destroySessionsBySid(sid);
+  memoryStore.destroy(sid, (err) => {
+    if (err) {
+      console.error('Failed to destroy session:', err);
+    }
+  });
 }
 async function destroySessionsBySub(sub) {
   // Example: find sessions by sub and destroy them
-  // await destroySessionsBySub(sub);
-	if (userinfoCache[sub]) {
-		userinfoCache[sub] = undefined; // Clear userinfo cache for the sub
-	}
+    memoryStore.destroy(sub, (err) => {
+    if (err) {
+      console.error('Failed to destroy session:', err);
+    }
+  });
 }
 
 
